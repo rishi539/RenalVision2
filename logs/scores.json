@@ -1,0 +1,30 @@
+{
+    "loss": 0.1632,
+    "accuracy": 0.9456,
+    "per_class_metrics": {
+        "Cyst": {
+            "precision": 0.8981,
+            "recall": 0.9946,
+            "f1_score": 0.9439,
+            "support": 372
+        },
+        "Normal": {
+            "precision": 0.9566,
+            "recall": 0.9961,
+            "f1_score": 0.9759,
+            "support": 509
+        },
+        "Stone": {
+            "precision": 0.9802,
+            "recall": 0.7122,
+            "f1_score": 0.825,
+            "support": 139
+        },
+        "Tumor": {
+            "precision": 0.9951,
+            "recall": 0.8952,
+            "f1_score": 0.9425,
+            "support": 229
+        }
+    }
+}
