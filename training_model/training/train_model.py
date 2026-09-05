@@ -225,7 +225,7 @@ class ModelTrainer:
         history_stage1 = model.fit(
             self.train_gen,
             epochs=self.params.get("INITIAL_EPOCHS", 10),
-            initial_epoch=8,
+            initial_epoch=0,
             validation_data=self.val_gen,
             class_weight=class_weight_dict,
             callbacks=callbacks

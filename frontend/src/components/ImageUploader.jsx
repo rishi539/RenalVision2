@@ -58,22 +58,60 @@ const ImageUploader = ({ onAnalyze, loading }) => {
         />
 
         {selectedImage ? (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '14px' }}>
-            <img
-              src={selectedImage}
-              alt="CT Scan Preview"
-              style={{ maxHeight: '220px', maxWidth: '100%', borderRadius: '10px', boxShadow: '0 4px 20px rgba(0,0,0,0.3)' }}
-            />
-            <button
-              className="logout-btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                setSelectedImage(null);
-                setBase64Image(null);
-              }}
-            >
-              <RefreshCw size={12} style={{ display: 'inline', marginRight: '4px' }} /> Change Image
-            </button>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '14px', position: 'relative' }}>
+            <div style={{ position: 'relative', borderRadius: '10px', overflow: 'hidden' }}>
+              <img
+                src={selectedImage}
+                alt="CT Scan Preview"
+                style={{
+                  maxHeight: '220px',
+                  maxWidth: '100%',
+                  borderRadius: '10px',
+                  boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
+                  filter: loading ? 'brightness(0.65)' : 'none',
+                  transition: 'filter 0.3s ease'
+                }}
+              />
+              {loading && (
+                <div className="scan-radar-overlay">
+                  <div className="scan-radar-line" />
+                  <div style={{
+                    position: 'absolute',
+                    inset: 0,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: 'rgba(10, 14, 26, 0.5)',
+                    backdropFilter: 'blur(2px)'
+                  }}>
+                    <div className="revolving-circle-loader" style={{ width: '56px', height: '56px', margin: '0 0 10px 0' }}>
+                      <div className="revolving-outer-ring" style={{ borderWidth: '2.5px' }} />
+                      <div className="revolving-middle-ring" />
+                      <div className="revolving-inner-core" style={{ width: '20px', height: '20px' }}>
+                        <Sparkles size={11} color="#06b6d4" />
+                      </div>
+                    </div>
+                    <span style={{ fontSize: '11px', fontWeight: '700', color: 'var(--accent-cyan)', letterSpacing: '0.5px' }}>
+                      Scanning CT Image...
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {!loading && (
+              <button
+                className="logout-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSelectedImage(null);
+                  setBase64Image(null);
+                }}
+              >
+                <RefreshCw size={12} style={{ display: 'inline', marginRight: '4px' }} /> Change Image
+              </button>
+            )}
           </div>
         ) : (
           <div>
@@ -90,7 +128,10 @@ const ImageUploader = ({ onAnalyze, loading }) => {
         onClick={handleAnalyzeClick}
       >
         {loading ? (
-          <span>Analyzing CT Scan & Generating Grad-CAM...</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div className="revolving-spinner-sm" />
+            <span>Analyzing CT Scan & Generating Grad-CAM...</span>
+          </div>
         ) : (
           <>
             <Sparkles size={18} />

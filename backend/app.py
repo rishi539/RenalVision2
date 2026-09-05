@@ -17,7 +17,7 @@ from cnnClassifier.utils.db_manager import (
 )
 
 os.putenv('LANG', 'en_US.UTF-8')
-os.putenv('LC_ALL', 'en_US.UTF-8')
+os.putenv('LC_ALL', 'en_US.UTF-8') 
 
 app = Flask(__name__)
 app.secret_key = 'super-secret-renalvision-key'
@@ -111,6 +111,21 @@ def getUserHistoryRoute(user_id):
     return jsonify(history)
 
 
+@app.route("/api/user/<int:user_id>/recommendations/gemini", methods=['POST', 'OPTIONS'])
+def triggerGeminiRecommendationRoute(user_id):
+    if request.method == 'OPTIONS':
+        return '', 204
+    from cnnClassifier.utils.db_manager import trigger_gemini_recommendation_for_user
+    try:
+        rec = trigger_gemini_recommendation_for_user(user_id)
+        if not rec:
+            return jsonify({"error": "Failed to generate recommendation"}), 400
+        return jsonify({"status": "success", "recommendations": rec})
+    except Exception as e:
+        return jsonify({"error": f"Gemini AI Service Error: {str(e)}"}), 500
+
+
+
 @app.route("/api/scan/<int:scan_id>", methods=['DELETE', 'OPTIONS'])
 def deleteScanRoute(scan_id):
     if request.method == 'OPTIONS':
@@ -145,7 +160,8 @@ def predictRoute():
                 prediction=res_data.get("image", "Unknown"),
                 confidence=res_data.get("confidence", 0.0),
                 probabilities=res_data.get("probabilities", {}),
-                gradcam_b64=res_data.get("gradcam")
+                gradcam_b64=res_data.get("gradcam"),
+                original_b64=image_b64
             )
         except Exception as e:
             print(f"Failed to log scan record: {e}")

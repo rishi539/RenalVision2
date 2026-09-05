@@ -1,0 +1,26 @@
+# ============================================
+# Training Pipeline Dependencies
+# ============================================
+# Core ML
+tensorflow
+numpy
+pandas
+scikit-learn
+
+# Experiment Tracking
+mlflow
+
+# Data Versioning
+dvc
+
+# Config & Serialization
+pyyaml
+python-box
+
+# Utilities
+matplotlib
+seaborn
+tqdm
+joblib
+scipy
+Pillow

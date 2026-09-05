@@ -7,166 +7,153 @@ import matplotlib.pyplot as plt
 from cnnClassifier import logger
 
 
-def find_conv_layers(model: tf.keras.Model) -> list:
+def get_multiscale_layers(model: tf.keras.Model) -> dict:
     """
-    Finds names of target Conv2D layers across distinct architectural blocks (e.g. block5_conv3 and block4_conv3).
+    Identifies the high-resolution spatial feature layer
+    and the deep semantic feature layer for full-region Grad-CAM.
     """
-    conv_layers = []
-    seen_blocks = set()
-    for layer in reversed(model.layers):
-        if isinstance(layer, tf.keras.layers.Conv2D) or "conv" in layer.name.lower():
-            block_prefix = layer.name.split("_")[0] if "_" in layer.name else layer.name
-            if block_prefix not in seen_blocks:
-                seen_blocks.add(block_prefix)
-                conv_layers.append(layer.name)
-            if len(conv_layers) == 2:
-                break
+    layer_names = [l.name for l in model.layers]
     
-    if not conv_layers:
-        raise ValueError("No convolutional layer found in model.")
-    
-    conv_layers.reverse()  # [penultimate_block_conv, last_block_conv]
-    logger.info(f"Detected target convolutional layers for Grad-CAM: {conv_layers}")
-    return conv_layers
+    # 1. ConvNeXt architectures
+    if "convnext_tiny_stage_2_block_8_depthwise_conv" in layer_names and "layer_normalization" in layer_names:
+        return {
+            "spatial": "convnext_tiny_stage_2_block_8_depthwise_conv",
+            "semantic": "layer_normalization"
+        }
+        
+    # 2. VGG16 architectures
+    if "block5_conv3" in layer_names and "block4_conv3" in layer_names:
+        return {
+            "spatial": "block4_conv3",
+            "semantic": "block5_conv3"
+        }
+
+    # 3. Dynamic search for pre-pooling 4D layers
+    conv_4d = []
+    for l in model.layers:
+        shape = getattr(l, 'output_shape', None)
+        if shape is None and hasattr(l, 'output'):
+            shape = l.output.shape
+        if shape and len(shape) == 4 and not isinstance(l, tf.keras.layers.InputLayer):
+            conv_4d.append(l.name)
+            
+    if len(conv_4d) >= 2:
+        return {"spatial": conv_4d[-2], "semantic": conv_4d[-1]}
+    elif conv_4d:
+        return {"spatial": conv_4d[-1], "semantic": conv_4d[-1]}
+    else:
+        raise ValueError("No 4D spatial feature layers found in model.")
 
 
 def generate_gradcam_heatmap(model: tf.keras.Model, img_array: np.ndarray, pred_index: int = None) -> np.ndarray:
     """
-    Generates a high-precision multi-layer fused Grad-CAM heatmap array [0, 1].
-    Combines deep semantic features (block5_conv3) with fine structural features (block4_conv3).
+    Generates a full-volume, high-precision Grad-CAM heatmap array [0, 1].
+    Combines deep semantic guidance (Class 'What') with anatomical tissue guidance (Spatial 'Where').
+    Preserves all affected regions across the organ rather than collapsing into single dots.
     """
-    conv_layer_names = find_conv_layers(model)
-    last_conv_name = conv_layer_names[-1]
-    
-    # Check if penultimate layer is available for multi-scale fusion
-    penultimate_conv_name = conv_layer_names[0] if len(conv_layer_names) > 1 else None
+    layers_dict = get_multiscale_layers(model)
+    spatial_layer_name = layers_dict["spatial"]
+    semantic_layer_name = layers_dict["semantic"]
 
-    if penultimate_conv_name and penultimate_conv_name != last_conv_name:
-        last_conv = model.get_layer(last_conv_name)
-        penultimate_conv = model.get_layer(penultimate_conv_name)
+    spatial_layer = model.get_layer(spatial_layer_name)
+    semantic_layer = model.get_layer(semantic_layer_name)
 
-        grad_model = tf.keras.models.Model(
-            inputs=model.inputs,
-            outputs=[penultimate_conv.output, last_conv.output, model.output]
-        )
+    grad_model = tf.keras.models.Model(
+        inputs=model.inputs,
+        outputs=[spatial_layer.output, semantic_layer.output, model.output]
+    )
 
-        with tf.GradientTape(persistent=True) as tape:
-            pen_outputs, last_outputs, predictions = grad_model(img_array)
-            if isinstance(predictions, list):
-                predictions = predictions[0]
-            if pred_index is None:
-                pred_index = tf.argmax(predictions[0])
-            class_channel = predictions[:, pred_index]
+    with tf.GradientTape(persistent=True) as tape:
+        out_spatial, out_semantic, predictions = grad_model(img_array)
+        if isinstance(predictions, list):
+            predictions = predictions[0]
+        if pred_index is None:
+            pred_index = tf.argmax(predictions[0])
+        class_channel = predictions[:, pred_index]
 
-        # Gradients for last conv layer (block5_conv3 - deep semantics)
-        grads_last = tape.gradient(class_channel, last_outputs)
-        pooled_grads_last = tf.reduce_mean(grads_last, axis=(0, 1, 2))
-        conv_outputs_last = last_outputs[0]
-        heatmap_last = conv_outputs_last @ pooled_grads_last[..., tf.newaxis]
-        heatmap_last = tf.squeeze(heatmap_last)
-        heatmap_last = tf.maximum(heatmap_last, 0)
+    # Gradients for semantic layer (captures overall affected lesion volume)
+    grads_semantic = tape.gradient(class_channel, out_semantic)
+    pooled_semantic = tf.reduce_mean(tf.maximum(grads_semantic, 0), axis=(0, 1, 2))
+    cam_semantic = tf.maximum(out_semantic[0] @ pooled_semantic[..., tf.newaxis], 0).numpy().squeeze()
+    cam_semantic = np.nan_to_num(cam_semantic, nan=0.0)
+    if np.max(cam_semantic) > 0:
+        cam_semantic = cam_semantic / np.max(cam_semantic)
 
-        # Gradients for penultimate conv layer (block4_conv3 - spatial structure)
-        grads_pen = tape.gradient(class_channel, pen_outputs)
-        pooled_grads_pen = tf.reduce_mean(grads_pen, axis=(0, 1, 2))
-        conv_outputs_pen = pen_outputs[0]
-        heatmap_pen = conv_outputs_pen @ pooled_grads_pen[..., tf.newaxis]
-        heatmap_pen = tf.squeeze(heatmap_pen)
-        heatmap_pen = tf.maximum(heatmap_pen, 0)
+    # Gradients for spatial layer (captures fine organ and lesion contours)
+    grads_spatial = tape.gradient(class_channel, out_spatial)
+    pooled_spatial = tf.reduce_mean(tf.maximum(grads_spatial, 0), axis=(0, 1, 2))
+    cam_spatial = tf.maximum(out_spatial[0] @ pooled_spatial[..., tf.newaxis], 0).numpy().squeeze()
+    cam_spatial = np.nan_to_num(cam_spatial, nan=0.0)
+    if np.max(cam_spatial) > 0:
+        cam_spatial = cam_spatial / np.max(cam_spatial)
 
-        del tape
+    del tape
 
-        # Normalize individual heatmaps
-        max_last = tf.reduce_max(heatmap_last)
-        if max_last > 0:
-            heatmap_last = heatmap_last / max_last
+    # Resize both feature maps to high-resolution (e.g. 224x224)
+    cam_sem_resized = np.array(
+        Image.fromarray(cam_semantic).resize((224, 224), Image.Resampling.BICUBIC)
+    ).astype(np.float32)
+    cam_spa_resized = np.array(
+        Image.fromarray(cam_spatial).resize((224, 224), Image.Resampling.BICUBIC)
+    ).astype(np.float32)
 
-        max_pen = tf.reduce_max(heatmap_pen)
-        if max_pen > 0:
-            heatmap_pen = heatmap_pen / max_pen
+    # Additive regional fusion: 55% broad semantic coverage + 45% anatomical tissue contour
+    # Ensures all affected parts of the lesion/organ are illuminated
+    fused_heatmap = 0.55 * cam_sem_resized + 0.45 * cam_spa_resized
+    fused_heatmap = np.nan_to_num(fused_heatmap, nan=0.0)
+    if np.max(fused_heatmap) > 0:
+        fused_heatmap = fused_heatmap / np.max(fused_heatmap)
 
-        # Resize last heatmap to match penultimate heatmap resolution (14x14)
-        last_h, last_w = heatmap_last.shape
-        pen_h, pen_w = heatmap_pen.shape
-        
-        heatmap_last_img = Image.fromarray(heatmap_last.numpy()).resize((pen_w, pen_h), Image.Resampling.BILINEAR)
-        heatmap_last_resized = np.array(heatmap_last_img)
-
-        # Fuse 70% deep semantic + 30% structural detail
-        fused_heatmap = 0.70 * heatmap_last_resized + 0.30 * heatmap_pen.numpy()
-        heatmap = fused_heatmap
-
-    else:
-        # Fallback to single-layer Grad-CAM
-        last_conv = model.get_layer(last_conv_name)
-        grad_model = tf.keras.models.Model(
-            inputs=model.inputs,
-            outputs=[last_conv.output, model.output]
-        )
-
-        with tf.GradientTape() as tape:
-            conv_outputs, predictions = grad_model(img_array)
-            if isinstance(predictions, list):
-                predictions = predictions[0]
-            if pred_index is None:
-                pred_index = tf.argmax(predictions[0])
-            class_channel = predictions[:, pred_index]
-
-        grads = tape.gradient(class_channel, conv_outputs)
-        pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-        conv_outputs = conv_outputs[0]
-        heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]
-        heatmap = tf.squeeze(heatmap)
-        heatmap = tf.maximum(heatmap, 0).numpy()
-
-    # Final normalization
-    max_val = np.max(heatmap)
-    if max_val > 0:
-        heatmap = heatmap / max_val
-
-    return heatmap
+    return fused_heatmap
 
 
 def generate_gradcam_visualizations(
     original_img_path: str,
     heatmap: np.ndarray,
-    alpha: float = 0.6,
-    power: float = 1.2,
-    threshold: float = 0.02,
+    alpha: float = 0.60,
+    power: float = 1.12,
     colormap: str = "jet"
 ) -> dict:
     """
-    Applies focal sharpening, background noise suppression, and tissue-aware masking
-    to generate highly accurate, localized Grad-CAM overlay visualizations.
+    Applies anatomical tissue masking and smooth thermal contrast to highlight
+    the entire affected pathology region with proper clinical intensity.
     """
-
-    # Open original CT image
     orig_img = Image.open(original_img_path).convert("RGB")
     width, height = orig_img.size
 
-    # Convert to grayscale for CT foreground tissue masking
+    # Resize raw heatmap to original image dimensions with bicubic smoothing
+    heatmap_raw_img = Image.fromarray(heatmap).resize((width, height), Image.Resampling.BICUBIC)
+    heatmap_resized = np.array(heatmap_raw_img).astype(np.float32)
+
+    # CT Anatomical Tissue Mask: Suppress empty black background and scanner bed
     orig_gray = np.array(orig_img.convert("L")).astype(np.float32) / 255.0
+    tissue_mask = np.where(orig_gray > 0.12, 1.0, 0.0)
+    
+    # Soften tissue mask edges with Gaussian blur
+    mask_pil = Image.fromarray((tissue_mask * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(radius=8))
+    soft_tissue_mask = np.array(mask_pil).astype(np.float32) / 255.0
 
-    # 2. Resize raw heatmap to image dimensions
-    heatmap_raw_img = Image.fromarray(heatmap).resize((width, height), Image.Resampling.BILINEAR)
-    heatmap_resized = np.array(heatmap_raw_img)
+    # Apply tissue mask to keep heatmap within bodily tissues
+    heatmap_masked = heatmap_resized * soft_tissue_mask
+    heatmap_masked = np.nan_to_num(heatmap_masked, nan=0.0, posinf=1.0, neginf=0.0)
+    max_masked = np.max(heatmap_masked)
+    if max_masked > 0:
+        heatmap_masked = heatmap_masked / max_masked
 
-    # 3. Apply Heatmap directly without Tissue Mask
-    heatmap_masked = heatmap_resized
-
-    # 4. Noise Floor Suppression & Soft Thresholding
-    heatmap_thresh = np.maximum(heatmap_masked - 0.0, 0)
+    # Gentle noise gate (5%) to preserve surrounding affected tissue context
+    heatmap_thresh = np.maximum(heatmap_masked - 0.05, 0.0)
     max_thresh = np.max(heatmap_thresh)
     if max_thresh > 0:
         heatmap_thresh = heatmap_thresh / max_thresh
 
-    # 5. Non-linear Focal Contrast Power Scaling (Sharpen peak over lesion mass)
+    # Smooth non-linear thermal contrast (power=1.12 maintains broad regional coverage)
+    heatmap_thresh = np.clip(heatmap_thresh, 0.0, 1.0)
     heatmap_sharpened = heatmap_thresh ** power
     max_sharp = np.max(heatmap_sharpened)
     if max_sharp > 0:
         heatmap_sharpened = heatmap_sharpened / max_sharp
 
-    # 6. Apply Jet Colormap
+    # Apply Jet Colormap
     try:
         cmap = plt.get_cmap(colormap)
     except Exception:
@@ -177,11 +164,11 @@ def generate_gradcam_visualizations(
     heatmap_colored = (cmap(heatmap_uint8)[:, :, :3] * 255).astype(np.uint8)
     heatmap_img = Image.fromarray(heatmap_colored)
 
-    # 7. Superimpose heatmap onto original CT scan
+    # Superimpose heatmap onto original CT scan
     orig_np = np.array(orig_img).astype(np.float32)
     heatmap_np = np.array(heatmap_img).astype(np.float32)
 
-    # Dynamic alpha blending: blend stronger over high activation zones, lighter over neutral zones
+    # Dynamic alpha blending: 60% intensity at peak, fading smoothly across affected tissue
     alpha_map = (heatmap_sharpened * alpha)[..., np.newaxis]
     overlay_np = (1 - alpha_map) * orig_np + alpha_map * heatmap_np
     overlay_np = np.clip(overlay_np, 0, 255).astype(np.uint8)

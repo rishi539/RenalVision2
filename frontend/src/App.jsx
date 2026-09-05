@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { UploadCloud, Layers, LineChart } from 'lucide-react';
+import { UploadCloud, Layers, LineChart, Sparkles } from 'lucide-react';
 import Navbar from './components/Navbar';
 import AuthPage from './components/AuthPage';
 import ImageUploader from './components/ImageUploader';
 import AnalysisResults from './components/AnalysisResults';
 import GradcamVisualizer from './components/GradcamVisualizer';
 import PatientDashboard from './components/PatientDashboard';
+import RecommendationView from './components/RecommendationView';
 import { fetchUserHistory, predictImage } from './services/api';
 import { logoutUser } from './services/api';
 
@@ -16,13 +17,21 @@ function App() {
   const [analysisResult, setAnalysisResult] = useState(null);
   const [currentOriginalImage, setCurrentOriginalImage] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState(false);
   const [toast, setToast] = useState(null);
-
-  // Session is handled strictly without localStorage persistence per user request.
+  const [recsTrigger, setRecsTrigger] = useState(0);
 
   const showToast = (message, type = 'success') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 4000);
+  };
+
+  const handleOpenRecommendations = (forceRun = true) => {
+    setActiveTab('recommendations');
+    if (forceRun) {
+      setRecsTrigger((prev) => prev + 1);
+    }
   };
 
   const handleLoginSuccess = (userData) => {
@@ -43,11 +52,16 @@ function App() {
 
   const loadHistory = async (userId) => {
     if (!userId) return;
+    setHistoryLoading(true);
+    setHistoryError(false);
     try {
       const history = await fetchUserHistory(userId);
       setUserHistory(history);
     } catch (err) {
       console.error('Failed to load user history:', err);
+      setHistoryError(true);
+    } finally {
+      setHistoryLoading(false);
     }
   };
 
@@ -133,10 +147,20 @@ function App() {
           </div>
           <div 
             className={`sidebar-icon ${activeTab === 'history' ? 'active' : ''}`} 
-            onClick={() => setActiveTab('history')}
+            onClick={() => {
+              setActiveTab('history');
+              if (user?.id) loadHistory(user.id);
+            }}
             title="History Chart"
           >
             <LineChart size={24} />
+          </div>
+          <div 
+            className={`sidebar-icon ${activeTab === 'recommendations' ? 'active' : ''}`} 
+            onClick={() => setActiveTab('recommendations')}
+            title="AI Recommendations"
+          >
+            <Sparkles size={24} />
           </div>
         </div>
 
@@ -167,7 +191,7 @@ function App() {
                   <ImageUploader onAnalyze={handleAnalyze} loading={loading} />
                 </div>
                 <div>
-                  <AnalysisResults result={analysisResult} />
+                  <AnalysisResults result={analysisResult} loading={loading} />
                 </div>
               </div>
             </div>
@@ -183,7 +207,24 @@ function App() {
             </div>
 
             <div style={{ display: activeTab === 'history' ? 'block' : 'none' }}>
-              <PatientDashboard user={user} historyData={userHistory} />
+              <PatientDashboard 
+                user={user} 
+                historyData={userHistory} 
+                loading={historyLoading} 
+                error={historyError} 
+                onRetry={() => user?.id && loadHistory(user.id)} 
+                onNavigateToRecs={handleOpenRecommendations}
+              />
+            </div>
+
+            <div style={{ display: activeTab === 'recommendations' ? 'block' : 'none' }}>
+              <RecommendationView 
+                user={user} 
+                historyData={userHistory} 
+                onRefreshHistory={() => user?.id && loadHistory(user.id)} 
+                runTrigger={recsTrigger}
+                onNavigateToAnalysis={() => setActiveTab('analysis')}
+              />
             </div>
           </div>
         </div>

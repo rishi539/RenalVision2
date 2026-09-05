@@ -3,7 +3,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 inputImage.jpg
-artifacts/
+artifacts/*
+!artifacts/training/
 
 # C extensions
 *.so
@@ -165,3 +166,12 @@ cython_debug/
 #.idea/
 
 artifacts/*
+!artifacts/training/
+!artifacts/training/**
+
+# MLOps — Experiment Tracking & Model Registry
+training_model/mlruns/
+training_model/runs/
+training_model/model_registry.json
+training_model/dataset_registry.json
+backend/model/*_backup_*.h5

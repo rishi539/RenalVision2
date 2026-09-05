@@ -45,3 +45,8 @@ export const deleteScan = async (scanId) => {
   const response = await api.delete(`/api/scan/${scanId}`);
   return response.data;
 };
+
+export const triggerGeminiRecommendation = async (userId) => {
+  const response = await api.post(`/api/user/${userId}/recommendations/gemini`);
+  return response.data;
+};
