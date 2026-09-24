@@ -10,6 +10,22 @@ except ImportError:
     GEMINI_SDK_AVAILABLE = False
 
 
+def is_gemini_available() -> bool:
+    """Checks and dynamically re-attempts importing google.generativeai if initially unavailable."""
+    global genai, GEMINI_SDK_AVAILABLE
+    if GEMINI_SDK_AVAILABLE:
+        return True
+    try:
+        import google.generativeai as genai_module
+        genai = genai_module
+        GEMINI_SDK_AVAILABLE = True
+        return True
+    except ImportError:
+        GEMINI_SDK_AVAILABLE = False
+        return False
+
+
+
 def load_env_file():
     """Helper to auto-load .env from root or backend directory if present."""
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -46,7 +62,7 @@ def generate_pure_gemini_recommendation(scans: List[Dict[str, Any]]) -> Dict[str
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key or api_key == "your_gemini_api_key_here":
         raise ValueError("GEMINI_API_KEY is not configured in backend/.env. Gemini is required for AI Analysis.")
-    if not GEMINI_SDK_AVAILABLE:
+    if not is_gemini_available():
         raise RuntimeError("google.generativeai SDK is not available in environment.")
 
     genai.configure(api_key=api_key)

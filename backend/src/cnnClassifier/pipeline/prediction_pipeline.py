@@ -13,25 +13,46 @@ class PredictionPipeline:
         self.filename = filename
         BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 
-        # Primary Model: ConvNeXt-based V2.1 model (.keras native format)
-        self.model_path = os.path.join(BASE_DIR, "backend", "model", "renalvision_v2_1_best.keras")
-        if not os.path.exists(self.model_path):
-            logger.info("Primary V2.1 model not found, falling back to model1.h5...")
-            self.model_path = os.path.join(BASE_DIR, "backend", "model", "model1.h5")
-        
-        if os.path.exists(self.model_path):
-            logger.info(f"Loading Model from: {self.model_path}")
-            self.model = load_model(self.model_path, compile=False)
-        else:
-            raise FileNotFoundError(f"No valid model found at {self.model_path}")
+        # ═══════════════════════════════════════════════════════════════════
+        # DUAL-MODEL ARCHITECTURE
+        # ─────────────────────────────────────────────────────────────────
+        # Prediction Model : renalvision_v2_1_best.keras  (accurate classification)
+        # Grad-CAM Model   : model1.h5                    (high-quality heatmaps)
+        # ═══════════════════════════════════════════════════════════════════
 
-        # Check if model handles normalization internally (e.g. ConvNeXt, EfficientNet)
-        self.has_internal_normalization = any(
+        # --- Prediction Model (.keras) ---
+        self.prediction_model_path = os.path.join(BASE_DIR, "backend", "model", "renalvision_v2_1_best.keras")
+        if os.path.exists(self.prediction_model_path):
+            logger.info(f"Loading PREDICTION model from: {self.prediction_model_path}")
+            self.prediction_model = load_model(self.prediction_model_path, compile=False)
+        else:
+            raise FileNotFoundError(f"Prediction model not found at {self.prediction_model_path}")
+
+        # Check if prediction model handles normalization internally (e.g. ConvNeXt, EfficientNet)
+        self.pred_has_internal_normalization = any(
             isinstance(l, (tf.keras.layers.Normalization, tf.keras.layers.Rescaling)) or
             "normalization" in l.name.lower() or "rescaling" in l.name.lower()
-            for l in self.model.layers[:5]
+            for l in self.prediction_model.layers[:5]
         )
-        logger.info(f"Model internal normalization detected: {self.has_internal_normalization}")
+        logger.info(f"Prediction model internal normalization: {self.pred_has_internal_normalization}")
+
+        # --- Grad-CAM Model (.h5) ---
+        self.gradcam_model_path = os.path.join(BASE_DIR, "backend", "model", "model1.h5")
+        if os.path.exists(self.gradcam_model_path):
+            logger.info(f"Loading GRAD-CAM model from: {self.gradcam_model_path}")
+            self.gradcam_model = load_model(self.gradcam_model_path, compile=False)
+        else:
+            logger.warning(f"Grad-CAM model not found at {self.gradcam_model_path}, falling back to prediction model for Grad-CAM.")
+            self.gradcam_model = self.prediction_model
+            self.gradcam_model_path = self.prediction_model_path
+
+        # Check if gradcam model handles normalization internally
+        self.gradcam_has_internal_normalization = any(
+            isinstance(l, (tf.keras.layers.Normalization, tf.keras.layers.Rescaling)) or
+            "normalization" in l.name.lower() or "rescaling" in l.name.lower()
+            for l in self.gradcam_model.layers[:5]
+        )
+        logger.info(f"Grad-CAM model internal normalization: {self.gradcam_has_internal_normalization}")
 
         # Load class names mapping
         class_names_path = os.path.join(BASE_DIR, "backend", "model", "class_names.json")
@@ -41,8 +62,10 @@ class PredictionPipeline:
         else:
             self.class_names = {"0": "Normal", "1": "Cyst", "2": "Stone", "3": "Tumor"}
 
+        logger.info("Dual-model pipeline initialized successfully.")
+
     def predict(self) -> list:
-        """Runs model inference on input image and returns predicted class, probabilities, and Grad-CAM."""
+        """Runs dual-model inference: .keras for prediction, .h5 for Grad-CAM explainability."""
         if not os.path.exists(self.filename):
             raise FileNotFoundError(f"Input image file not found: {self.filename}")
 
@@ -51,14 +74,15 @@ class PredictionPipeline:
         img_array = image.img_to_array(test_img_raw)
         img_array_expanded = np.expand_dims(img_array.copy(), axis=0)
 
-        # Scale pixels appropriately: ConvNeXt/EfficientNet has built-in Normalization expecting [0, 255]
-        if self.has_internal_normalization:
-            input_tensor = img_array_expanded.astype(np.float32)
+        # ── STEP 1: Prediction using .keras model ──────────────────────
+        # Scale pixels appropriately for prediction model
+        if self.pred_has_internal_normalization:
+            pred_input_tensor = img_array_expanded.astype(np.float32)
         else:
-            input_tensor = (img_array_expanded / 255.0).astype(np.float32)
+            pred_input_tensor = (img_array_expanded / 255.0).astype(np.float32)
 
-        # Model inference
-        predictions = self.model.predict(input_tensor, verbose=0)
+        logger.info("Running prediction inference with .keras model...")
+        predictions = self.prediction_model.predict(pred_input_tensor, verbose=0)
         probabilities = predictions[0]
 
         predicted_idx = int(np.argmax(probabilities))
@@ -112,11 +136,19 @@ class PredictionPipeline:
         gradcam_overlay = None
         gradcam_heatmap_img = None
 
+        # ── STEP 2: Grad-CAM using .h5 model ──────────────────────────
         if should_highlight:
             try:
+                # Prepare input tensor for Grad-CAM model (may have different normalization)
+                if self.gradcam_has_internal_normalization:
+                    gradcam_input_tensor = img_array_expanded.astype(np.float32)
+                else:
+                    gradcam_input_tensor = (img_array_expanded / 255.0).astype(np.float32)
+
+                logger.info(f"Generating Grad-CAM heatmap with .h5 model for class index {target_idx}...")
                 heatmap = generate_gradcam_heatmap(
-                    model=self.model,
-                    img_array=input_tensor,
+                    model=self.gradcam_model,
+                    img_array=gradcam_input_tensor,
                     pred_index=target_idx
                 )
                 visualizations = generate_gradcam_visualizations(
@@ -126,8 +158,9 @@ class PredictionPipeline:
                 )
                 gradcam_overlay = visualizations["overlay"]
                 gradcam_heatmap_img = visualizations["heatmap"]
+                logger.info("Grad-CAM heatmap generated successfully with .h5 model.")
             except Exception as e:
-                logger.error(f"Grad-CAM generation failed: {e}")
+                logger.error(f"Grad-CAM generation failed with .h5 model: {e}")
                 gradcam_overlay = orig_data_url
         else:
             # Healthy Normal Scan: Suppress Grad-CAM highlighting to prevent false-positive artifacts
@@ -141,6 +174,10 @@ class PredictionPipeline:
             "Healthy / Normal Scan (Normal >= 80%). Grad-CAM heatmap highlighting is suppressed for normal findings."
         )
 
+        # Identify which models were used
+        pred_model_name = os.path.basename(self.prediction_model_path)
+        gradcam_model_name = os.path.basename(self.gradcam_model_path)
+
         return [{
             "prediction": predicted_class,
             "image": predicted_class,
@@ -150,5 +187,7 @@ class PredictionPipeline:
             "heatmap": gradcam_heatmap_img,
             "heatmap_class": target_class_name,
             "is_highlighted": should_highlight,
-            "highlight_reason": highlight_msg
+            "highlight_reason": highlight_msg,
+            "prediction_model": pred_model_name,
+            "gradcam_model": gradcam_model_name
         }]

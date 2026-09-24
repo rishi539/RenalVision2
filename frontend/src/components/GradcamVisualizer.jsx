@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Flame, Eye, Layers, Image as ImageIcon, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Flame, Eye, Layers, Image as ImageIcon, CheckCircle2, AlertCircle, Cpu } from 'lucide-react';
 
 const GradcamVisualizer = ({ result, originalImage }) => {
   const [activeTab, setActiveTab] = useState('sidebyside');
@@ -38,6 +38,20 @@ const GradcamVisualizer = ({ result, originalImage }) => {
               ? `🔥 Pinpointing regions influencing ${heatmapClass} features (${(result.probabilities?.[heatmapClass] || result.confidence).toFixed(1)}% probability detected).`
               : `✅ Healthy / Normal Scan (${normalProb.toFixed(1)}% Normal): Zero lesions or abnormalities detected. Grad-CAM highlighting is suppressed.`}
           </div>
+          {result.gradcam_model && (
+            <div style={{
+              fontSize: '10px',
+              fontWeight: '600',
+              color: 'var(--accent-cyan)',
+              marginTop: '4px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}>
+              <Cpu size={11} />
+              <span>Heatmap Source: <strong>{result.gradcam_model}</strong></span>
+            </div>
+          )}
         </div>
 
         <div className="gradcam-tabs">

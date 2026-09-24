@@ -1,14 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { Activity, ShieldCheck, AlertCircle, Sparkles, Award, BarChart3 } from 'lucide-react';
+import { Activity, ShieldCheck, AlertCircle, Sparkles, Award, BarChart3, Cpu } from 'lucide-react';
 import RevolvingLoader from './RevolvingLoader';
 
 const AnalysisResults = ({ result, loading }) => {
   if (loading) {
     return (
       <RevolvingLoader
-        badge="Neural Inference Active"
+        badge="Dual-Model Inference Active"
         title="Rendering Diagnostic Analysis..."
-        subtitle="Executing ConvNeXt deep neural layers and synthesizing multi-scale Grad-CAM explainability heatmaps..."
+        subtitle="Please wait while we carefully analyze your scan..."
       />
     );
   }
@@ -315,6 +315,33 @@ const AnalysisResults = ({ result, loading }) => {
           );
         })}
       </div>
+
+      {/* Dual-Model Provenance Footer */}
+      {(result.prediction_model || result.gradcam_model) && (
+        <div style={{
+          marginTop: '20px',
+          padding: '12px 16px',
+          borderRadius: '12px',
+          background: 'rgba(6, 182, 212, 0.05)',
+          border: '1px solid rgba(6, 182, 212, 0.15)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+          position: 'relative',
+          zIndex: 1
+        }}>
+          <Cpu size={16} color="var(--accent-cyan)" style={{ flexShrink: 0 }} />
+          <div style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: '1.5' }}>
+            <span style={{ fontWeight: '700', color: 'var(--text-secondary)' }}>Dual-Model Pipeline</span>
+            {result.prediction_model && (
+              <span> · Prediction: <span style={{ fontWeight: '700', color: 'var(--accent-blue)' }}>{result.prediction_model}</span></span>
+            )}
+            {result.gradcam_model && (
+              <span> · Grad-CAM: <span style={{ fontWeight: '700', color: 'var(--accent-cyan)' }}>{result.gradcam_model}</span></span>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
